@@ -26,7 +26,9 @@ import (
 	"io/ioutil"
 	"log"
 	"os"
+	"os/exec"
 	"path"
+	"path/filepath"
 	"regexp"
 	"runtime"
 	"sort"
@@ -139,6 +141,9 @@ func supportsDynlink(arch *sys.Arch) bool {
 var timings Timings
 var benchfile string
 
+// function coverage flag
+var coverflag string
+
 var nowritebarrierrecCheck *nowritebarrierrecChecker
 
 // Main parses flags and Go source files specified in the command-line
@@ -247,6 +252,7 @@ func Main(archInit func(*Arch)) {
 	}
 	flag.BoolVar(&nolocalimports, "nolocalimports", false, "reject local (relative) imports")
 	flag.StringVar(&outfile, "o", "", "write output to `file`")
+	flag.StringVar(&coverflag, "cover", "", "collect coverage")
 	flag.StringVar(&myimportpath, "p", "", "set expected package import `path`")
 	flag.BoolVar(&writearchive, "pack", false, "write to file.a instead of file.o")
 	objabi.Flagcount("r", "debug generated wrappers", &Debug['r'])
@@ -570,7 +576,58 @@ func Main(archInit func(*Arch)) {
 	loadsys()
 
 	timings.Start("fe", "parse")
-	lines := parseFiles(flag.Args())
+
+	////////////////////////////////////////////////////////////////////////////////////////////////////
+
+	tempdir := false
+
+	files := flag.Args()
+	if coverflag != "" {
+
+		var options map[string]string
+		ss := strings.Split(coverflag, " ")
+		options = make(map[string]string)
+		for _, pair := range ss {
+			z := strings.Split(pair, "=")
+			options[z[0]] = z[1]
+		}
+
+		if options["dir"] == "" {
+			tempdir = true
+			options["dir"] = "WORK_COVER_FA7D31"
+		}
+
+		coverargs := []string{"-dir=" + options["dir"]}
+
+		if options["period"] != "" {
+			coverargs = append(coverargs, "-period="+options["period"])
+		}
+
+		if options["o"] != "" {
+			coverargs = append(coverargs, "-o="+options["o"])
+		}
+
+		coverargs = append(coverargs, files...)
+		cmd := exec.Command("funccover", coverargs...)
+		err := cmd.Run()
+		if err != nil {
+			log.Printf("coverage failed %s\n", err)
+		} else {
+			var newfiles []string
+			for _, source := range files {
+				if strings.HasSuffix(source, ".go") {
+					newfiles = append(newfiles, filepath.Join(options["dir"], filepath.Base(source)))
+				} else {
+					newfiles = append(newfiles, source)
+				}
+			}
+			files = newfiles
+		}
+
+	}
+	////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+	lines := parseFiles(files)
 	timings.Stop()
 	timings.AddEvent(int64(lines), "lines")
 
@@ -827,6 +884,14 @@ func Main(archInit func(*Arch)) {
 			log.Fatalf("cannot write benchmark data: %v", err)
 		}
 	}
+
+	if tempdir {
+		err := os.RemoveAll("WORK_COVER_FA7D31")
+		if err != nil {
+			log.Fatal(err)
+		}
+	}
+
 }
 
 // numNonClosures returns the number of functions in list which are not closures.
